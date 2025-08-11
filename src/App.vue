@@ -66,9 +66,11 @@ function createFish() {
   });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "fish"; // 為魚的 mesh 命名
+  const worldX = camera.right - camera.left;
+  const worldY = camera.top - camera.bottom;
   mesh.position.set(
-    (Math.random() - 0.5) * aquariumSize.x,
-    (Math.random() - 0.5) * aquariumSize.y,
+    (Math.random() - 0.5) * worldX,
+    (Math.random() - 0.5) * worldY,
     (Math.random() - 0.5) * aquariumSize.z
   );
   return {
@@ -104,9 +106,10 @@ function createBubble() {
     opacity: 0.6,
   });
   const mesh = new THREE.Mesh(geometry, material);
+  const worldX = camera.right - camera.left;
   mesh.position.set(
-    (Math.random() - 0.5) * aquariumSize.x * 0.8,
-    -aquariumSize.y / 2,
+    (Math.random() - 0.5) * worldX * 0.8,
+    camera.bottom,
     (Math.random() - 0.5) * aquariumSize.z * 0.8
   );
   mesh.userData.speed = 10 + Math.random() * 10;
@@ -134,12 +137,12 @@ function onCanvasClick(event) {
     const intersectPoint = new THREE.Vector3();
     if (raycaster.ray.intersectPlane(plane, intersectPoint)) {
       intersectPoint.x = Math.max(
-        -aquariumSize.x / 2,
-        Math.min(aquariumSize.x / 2, intersectPoint.x)
+        camera.left,
+        Math.min(camera.right, intersectPoint.x)
       );
       intersectPoint.y = Math.max(
-        -aquariumSize.y / 2,
-        Math.min(aquariumSize.y / 2, intersectPoint.y)
+        camera.bottom,
+        Math.min(camera.top, intersectPoint.y)
       );
       const food = createFood(intersectPoint);
       scene.add(food.mesh);
@@ -251,21 +254,42 @@ function animate() {
       fish.mesh.rotation.y = fish.direction.x < 0 ? Math.PI : 0;
     }
 
-    // 邊界反彈
+    // 邊界處理 (自然轉向)
     const p = fish.mesh.position;
-    const bounceFactor = -1.2; // 增加反彈力道
-    if (p.x < -aquariumSize.x / 2 || p.x > aquariumSize.x / 2) {
-      fish.direction.x *= bounceFactor;
-      p.x = Math.max(-aquariumSize.x / 2, Math.min(aquariumSize.x / 2, p.x));
+
+    // 魚的尺寸與邊界距離
+    const fishWidth = 60;
+    const fishHeight = 30;
+    const margin = 10; // 單位
+
+    // 計算考慮到魚尺寸和邊界的實際可游動範圍
+    const bounds = {
+      left: camera.left + fishWidth / 2 + margin,
+      right: camera.right - fishWidth / 2 - margin,
+      top: camera.top - fishHeight / 2 - margin,
+      bottom: camera.bottom + fishHeight / 2 + margin,
+      back: -aquariumSize.z / 2,
+      front: aquariumSize.z / 2,
+    };
+
+    const steer = new THREE.Vector3();
+    if (p.x < bounds.left) steer.x = 1;
+    if (p.x > bounds.right) steer.x = -1;
+    if (p.y < bounds.bottom) steer.y = 1;
+    if (p.y > bounds.top) steer.y = -1;
+    if (p.z < bounds.back) steer.z = 1;
+    if (p.z > bounds.front) steer.z = -1;
+
+    if (steer.lengthSq() > 0) {
+      // 如果需要轉向，平滑地改變方向
+      steer.normalize();
+      fish.direction.lerp(steer, 0.1);
     }
-    if (p.y < -aquariumSize.y / 2 || p.y > aquariumSize.y / 2) {
-      fish.direction.y *= bounceFactor;
-      p.y = Math.max(-aquariumSize.y / 2, Math.min(aquariumSize.y / 2, p.y));
-    }
-    if (p.z < -aquariumSize.z / 2 || p.z > aquariumSize.z / 2) {
-      fish.direction.z *= bounceFactor;
-      p.z = Math.max(-aquariumSize.z / 2, Math.min(aquariumSize.z / 2, p.z));
-    }
+
+    // 確保魚不會超出邊界
+    p.x = Math.max(bounds.left, Math.min(bounds.right, p.x));
+    p.y = Math.max(bounds.bottom, Math.min(bounds.top, p.y));
+    p.z = Math.max(bounds.back, Math.min(bounds.front, p.z));
 
     // 飢餓度
     fish.hunger = Math.min(1, fish.hunger + delta * 0.03);
@@ -286,10 +310,24 @@ function animate() {
       scene.remove(food.mesh); // 在此處統一移除被吃掉的食物
       return false;
     }
-    food.mesh.position.y -= 30 * delta; // 下沉
-    if (food.mesh.position.y < -aquariumSize.y / 2) {
-      scene.remove(food.mesh);
-      return false; // 移除沉到底部的
+
+    const bottomBoundary = camera.bottom;
+
+    // 飼料下沉
+    if (food.mesh.position.y > bottomBoundary) {
+      food.mesh.position.y -= 30 * delta;
+      if (food.mesh.position.y < bottomBoundary) {
+        food.mesh.position.y = bottomBoundary; // 觸底
+      }
+    }
+
+    // 如果飼料在底部，一段時間後移除
+    if (food.mesh.position.y === bottomBoundary) {
+      food.restTimer = (food.restTimer || 0) + delta;
+      if (food.restTimer > 20) { // 20秒後消失
+        scene.remove(food.mesh);
+        return false;
+      }
     }
     return true;
   });
@@ -297,10 +335,11 @@ function animate() {
   // 氣泡上升
   bubbles.forEach((bubble) => {
     bubble.mesh.position.y += bubble.mesh.userData.speed * delta;
-    if (bubble.mesh.position.y > aquariumSize.y / 2) {
+    if (bubble.mesh.position.y > camera.top) {
+      const worldX = camera.right - camera.left;
       bubble.mesh.position.set(
-        (Math.random() - 0.5) * aquariumSize.x * 0.8,
-        -aquariumSize.y / 2,
+        (Math.random() - 0.5) * worldX * 0.8,
+        camera.bottom,
         (Math.random() - 0.5) * aquariumSize.z * 0.8
       );
     }
@@ -356,6 +395,12 @@ onMounted(() => {
   const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
   directionalLight.position.set(0, 1, 1);
   scene.add(directionalLight);
+
+  // XYZ 軸輔助線
+  const axesHelper = new THREE.AxesHelper(500);
+  axesHelper.material.transparent = true;
+  axesHelper.material.opacity = 0.8;
+  scene.add(axesHelper);
 
   // 產生魚
   for (let i = 0; i < 5; i++) {
