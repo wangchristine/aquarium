@@ -26,7 +26,7 @@
 
 <script setup>
 import * as THREE from "three";
-import { ref, onMounted, onBeforeUnmount, reactive, nextTick } from "vue";
+import { ref, onMounted, onBeforeUnmount, reactive } from "vue";
 import foodBagImg from "@/assets/foodbag.png";
 
 // 可愛對話集
@@ -93,7 +93,7 @@ function createFood(pos) {
   const material = new THREE.MeshStandardMaterial({ color: 0x8b4513 });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.copy(pos);
-  return { mesh };
+  return { mesh, eaten: false };
 }
 
 function createBubble() {
@@ -223,15 +223,17 @@ function animate() {
 
       if (dist < 10) {
         // 吃飼料
-        if (fish.hunger > 0.15) {
+        if (fish.hunger > 0.15 && !fish.targetFood.eaten) {
           fish.hunger = Math.max(0, fish.hunger - 0.5);
-          scene.remove(fish.targetFood.mesh);
-          foods.splice(foods.indexOf(fish.targetFood), 1);
+          fish.targetFood.eaten = true; // 標記為被吃掉，但不立即移除
           fish.targetFood = null;
           fish.showBubble = true;
           fish.bubbleText = "吃飽飽，耶！";
           fish.bubbleType = "feed";
           fish.bubbleTimer = 0;
+        } else if (fish.targetFood.eaten) {
+          // 如果食物已經被吃掉，就放棄目標
+          fish.targetFood = null;
         }
       }
     } else {
@@ -278,13 +280,18 @@ function animate() {
     }
   });
 
-  // 飼料下沉
-  foods.forEach((food, index) => {
-    food.mesh.position.y -= 30 * delta; // 增加下沉速度
+  // 更新飼料狀態（下沉、移除被吃掉的）
+  foods = foods.filter((food) => {
+    if (food.eaten) {
+      scene.remove(food.mesh); // 在此處統一移除被吃掉的食物
+      return false;
+    }
+    food.mesh.position.y -= 30 * delta; // 下沉
     if (food.mesh.position.y < -aquariumSize.y / 2) {
       scene.remove(food.mesh);
-      foods.splice(index, 1);
+      return false; // 移除沉到底部的
     }
+    return true;
   });
 
   // 氣泡上升
