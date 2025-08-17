@@ -49,32 +49,41 @@ let scene, camera, renderer;
 let foods = [];
 let bubbles = [];
 const fishes = reactive([]);
+let handleResize = null;
 
+// 改回使用 reactive 的 aquariumSize，尺寸與 window 連動
 const aquariumSize = reactive({
   x: window.innerWidth,
   y: window.innerHeight,
   z: 300,
 });
+
 const clock = new THREE.Clock();
 
 function createFish() {
-  const geometry = new THREE.BoxGeometry(60, 30, 20);
+  const geometry = new THREE.BoxGeometry(60, 30, 20); // width, height, depth
   const material = new THREE.MeshStandardMaterial({
     color: 0xffaa00,
     roughness: 0.5,
     metalness: 0.3,
   });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = "fish"; // 為魚的 mesh 命名
-  const worldX = camera.right - camera.left;
-  const worldY = camera.top - camera.bottom;
-  mesh.position.set(
-    (Math.random() - 0.5) * worldX,
-    (Math.random() - 0.5) * worldY,
+  // 魚的本體 mesh，將其旋轉，使長邊朝向 Z 軸，以配合 lookAt
+  const fishBody = new THREE.Mesh(geometry, material);
+  fishBody.rotation.y = -Math.PI / 2;
+
+  // 使用一個 Group 來作為魚的容器，之後的操作都針對這個 group
+  const fishGroup = new THREE.Group();
+  fishGroup.add(fishBody);
+  fishGroup.name = "fish"; // 為 group 命名
+
+  // 在水族箱範圍內隨機生成
+  fishGroup.position.set(
+    (Math.random() - 0.5) * aquariumSize.x,
+    (Math.random() - 0.5) * aquariumSize.y,
     (Math.random() - 0.5) * aquariumSize.z
   );
   return {
-    mesh,
+    mesh: fishGroup, // 返回 group 作為操作對象
     speed: 50 + Math.random() * 50, // 增加基礎速度和隨機範圍
     hunger: Math.random() * 0.8 + 0.2, // 0 = 吃飽，1 = 最餓
     targetFood: null,
@@ -106,11 +115,10 @@ function createBubble() {
     opacity: 0.6,
   });
   const mesh = new THREE.Mesh(geometry, material);
-  const worldX = camera.right - camera.left;
   mesh.position.set(
-    (Math.random() - 0.5) * worldX * 0.8,
-    camera.bottom,
-    (Math.random() - 0.5) * aquariumSize.z * 0.8
+    (Math.random() - 0.5) * aquariumSize.x * 0.9,
+    -aquariumSize.y / 2,
+    (Math.random() - 0.5) * aquariumSize.z * 0.9
   );
   mesh.userData.speed = 10 + Math.random() * 10;
   return { mesh };
@@ -132,18 +140,22 @@ function onCanvasClick(event) {
   raycaster.setFromCamera(mouse, camera);
 
   if (feedingMode.value) {
-    // 飼料模式
+    // 飼料模式: 投射到 Z=0 平面
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const intersectPoint = new THREE.Vector3();
     if (raycaster.ray.intersectPlane(plane, intersectPoint)) {
+      // Clamp X and Y to the aquarium bounds
       intersectPoint.x = Math.max(
-        camera.left,
-        Math.min(camera.right, intersectPoint.x)
+        -aquariumSize.x / 2,
+        Math.min(aquariumSize.x / 2, intersectPoint.x)
       );
       intersectPoint.y = Math.max(
-        camera.bottom,
-        Math.min(camera.top, intersectPoint.y)
+        -aquariumSize.y / 2,
+        Math.min(aquariumSize.y / 2, intersectPoint.y)
       );
+
+      // Z 座標由與 Z=0 平面的交點決定，即為 0
+
       const food = createFood(intersectPoint);
       scene.add(food.mesh);
       foods.push(food);
@@ -152,8 +164,6 @@ function onCanvasClick(event) {
     // 點擊魚模式
     const intersects = raycaster.intersectObjects(fishes.map((f) => f.mesh));
     if (intersects.length > 0 && intersects[0].object.name === "fish") {
-      console.log(121);
-
       const intersectedFish = fishes.find(
         (f) => f.mesh === intersects[0].object
       );
@@ -198,8 +208,11 @@ function animate() {
     if (fish.hunger > 0.15 && foods.length > 0) {
       let nearestFood = null;
       let nearestDist = Infinity;
+      // 使用魚嘴的位置來找最近的食物
+      const mouthOffsetFind = new THREE.Vector3(0, -10, 35);
+      const mouthPositionFind = fish.mesh.localToWorld(mouthOffsetFind.clone());
       for (const food of foods) {
-        const dist = fish.mesh.position.distanceTo(food.mesh.position);
+        const dist = mouthPositionFind.distanceTo(food.mesh.position);
         if (dist < nearestDist) {
           nearestDist = dist;
           nearestFood = food;
@@ -216,20 +229,27 @@ function animate() {
         .subVectors(fish.targetFood.mesh.position, fish.mesh.position)
         .normalize();
       fish.direction.lerp(dir, 0.08);
-      const dist = fish.mesh.position.distanceTo(fish.targetFood.mesh.position);
-      const speedFactor = dist < 80 ? 2.5 : 1.5; // 靠近時加速
-      fish.mesh.position.addScaledVector(
-        fish.direction,
-        fish.speed * delta * speedFactor
-      );
-      fish.mesh.rotation.y = fish.direction.x < 0 ? Math.PI : 0;
 
-      if (dist < 10) {
+      // 計算嘴巴到食物的距離來判斷是否吃到
+      const mouthOffsetEat = new THREE.Vector3(0, -10, 35);
+      const mouthPositionEat = fish.mesh.localToWorld(mouthOffsetEat.clone());
+      const distToEat = mouthPositionEat.distanceTo(fish.targetFood.mesh.position);
+
+      if (distToEat < 6) {
         // 吃飼料
         if (fish.hunger > 0.15 && !fish.targetFood.eaten) {
           fish.hunger = Math.max(0, fish.hunger - 0.5);
           fish.targetFood.eaten = true; // 標記為被吃掉，但不立即移除
           fish.targetFood = null;
+
+          // 吃完飼料後給一個新的隨機方向，避免抖動
+          const randomDir = new THREE.Vector3(
+            (Math.random() - 0.5) * 2,
+            (Math.random() - 0.5) * 0.2,
+            (Math.random() - 0.5) * 2
+          ).normalize();
+          fish.direction.copy(randomDir);
+
           fish.showBubble = true;
           fish.bubbleText = "吃飽飽，耶！";
           fish.bubbleType = "feed";
@@ -250,26 +270,40 @@ function animate() {
         ).normalize();
         fish.direction.lerp(randomDir, 0.1);
       }
-      fish.mesh.position.addScaledVector(fish.direction, fish.speed * delta);
-      fish.mesh.rotation.y = fish.direction.x < 0 ? Math.PI : 0;
     }
 
-    // 邊界處理 (自然轉向)
+    // --- 統一更新位置與姿態 ---
+    let speedFactor = 1.0;
+    if (fish.targetFood) {
+      const dist = fish.mesh.position.distanceTo(fish.targetFood.mesh.position);
+      speedFactor = dist < 80 ? 2.5 : 1.5;
+    }
+    fish.mesh.position.addScaledVector(
+      fish.direction,
+      fish.speed * delta * speedFactor
+    );
+    // fish.mesh.lookAt(fish.mesh.position.clone().add(fish.direction));
+
+    // -- 平滑旋轉 --
+    // 1. 計算目標旋轉 (一個四元數)
+    const targetQuaternion = new THREE.Quaternion();
+    const dummy = new THREE.Object3D();
+    dummy.lookAt(fish.direction);
+    targetQuaternion.copy(dummy.quaternion);
+
+    // 2. 使用 slerp 平滑地插值到目標旋轉
+    fish.mesh.quaternion.slerp(targetQuaternion, 0.05);
+
+    // --- 邊界處理 ---
     const p = fish.mesh.position;
-
-    // 魚的尺寸與邊界距離
-    const fishWidth = 60;
-    const fishHeight = 30;
-    const margin = 10; // 單位
-
-    // 計算考慮到魚尺寸和邊界的實際可游動範圍
+    const margin = 15; // 因為魚會傾斜，邊界計算需要基於魚的中心點
     const bounds = {
-      left: camera.left + fishWidth / 2 + margin,
-      right: camera.right - fishWidth / 2 - margin,
-      top: camera.top - fishHeight / 2 - margin,
-      bottom: camera.bottom + fishHeight / 2 + margin,
-      back: -aquariumSize.z / 2,
-      front: aquariumSize.z / 2,
+      left: -aquariumSize.x / 2 + margin,
+      right: aquariumSize.x / 2 - margin,
+      top: aquariumSize.y / 2 - margin,
+      bottom: -aquariumSize.y / 2 + margin,
+      back: -aquariumSize.z / 2 + margin,
+      front: aquariumSize.z / 2 - margin,
     };
 
     const steer = new THREE.Vector3();
@@ -310,9 +344,7 @@ function animate() {
       scene.remove(food.mesh); // 在此處統一移除被吃掉的食物
       return false;
     }
-
-    const bottomBoundary = camera.bottom;
-
+    const bottomBoundary = -aquariumSize.y / 2;
     // 飼料下沉
     if (food.mesh.position.y > bottomBoundary) {
       food.mesh.position.y -= 30 * delta;
@@ -335,12 +367,11 @@ function animate() {
   // 氣泡上升
   bubbles.forEach((bubble) => {
     bubble.mesh.position.y += bubble.mesh.userData.speed * delta;
-    if (bubble.mesh.position.y > camera.top) {
-      const worldX = camera.right - camera.left;
+    if (bubble.mesh.position.y > aquariumSize.y / 2) {
       bubble.mesh.position.set(
-        (Math.random() - 0.5) * worldX * 0.8,
-        camera.bottom,
-        (Math.random() - 0.5) * aquariumSize.z * 0.8
+        (Math.random() - 0.5) * aquariumSize.x * 0.9,
+        -aquariumSize.y / 2,
+        (Math.random() - 0.5) * aquariumSize.z * 0.9
       );
     }
   });
@@ -349,22 +380,18 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-let boxMesh;
+let boxMesh, boxHelper;
 
 onMounted(() => {
   scene = new THREE.Scene();
-
   const aspect = window.innerWidth / window.innerHeight;
-  const frustumSize = 600;
-  camera = new THREE.OrthographicCamera(
-    (frustumSize * aspect) / -2,
-    (frustumSize * aspect) / 2,
-    frustumSize / 2,
-    frustumSize / -2,
-    1,
-    1000
-  );
-  camera.position.set(0, 0, 500);
+
+  camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 5000);
+  // 動態計算攝影機距離，並拉遠 20% 以創造邊界
+  const fov = 75;
+  let distance = (aquariumSize.y / 2) / Math.tan((fov / 2) * (Math.PI / 180));
+  distance *= 1.2;
+  camera.position.set(0, 0, distance);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -386,8 +413,12 @@ onMounted(() => {
     clearcoatRoughness: 0,
     side: THREE.BackSide,
   });
-  const boxMesh = new THREE.Mesh(boxGeo, boxMat);
+  boxMesh = new THREE.Mesh(boxGeo, boxMat);
   scene.add(boxMesh);
+
+  // 新增 BoxHelper 來繪製邊框
+  boxHelper = new THREE.BoxHelper(boxMesh, 0x000000);
+  scene.add(boxHelper);
 
   // 光源
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
@@ -396,11 +427,9 @@ onMounted(() => {
   directionalLight.position.set(0, 1, 1);
   scene.add(directionalLight);
 
-  // XYZ 軸輔助線
-  const axesHelper = new THREE.AxesHelper(500);
-  axesHelper.material.transparent = true;
-  axesHelper.material.opacity = 0.8;
-  scene.add(axesHelper);
+  // 移除 XYZ 軸輔助線
+  // const axesHelper = new THREE.AxesHelper(500);
+  // scene.add(axesHelper);
 
   // 產生魚
   for (let i = 0; i < 5; i++) {
@@ -416,23 +445,28 @@ onMounted(() => {
     bubbles.push(bubble);
   }
 
-  window.addEventListener("resize", () => {
-    const aspect = window.innerWidth / window.innerHeight;
-    const frustumSize = 600;
-    camera.left = (frustumSize * aspect) / -2;
-    camera.right = (frustumSize * aspect) / 2;
-    camera.top = frustumSize / 2;
-    camera.bottom = frustumSize / -2;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-
+  handleResize = () => {
     aquariumSize.x = window.innerWidth;
     aquariumSize.y = window.innerHeight;
 
-    if (boxMesh) {
-      boxMesh.scale.set(aquariumSize.x / 600, aquariumSize.y / 400, 1);
-    }
-  });
+    camera.aspect = window.innerWidth / window.innerHeight;
+    const fov = 75;
+    let distance = (aquariumSize.y / 2) / Math.tan((fov / 2) * (Math.PI / 180));
+    distance *= 1.2;
+    camera.position.z = distance;
+    camera.updateProjectionMatrix();
+
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    boxMesh.geometry.dispose();
+    boxMesh.geometry = new THREE.BoxGeometry(
+      aquariumSize.x,
+      aquariumSize.y,
+      aquariumSize.z
+    );
+    boxHelper.update();
+  };
+  window.addEventListener("resize", handleResize);
 
   animate();
 
@@ -441,7 +475,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", () => {});
+  if (handleResize) {
+    window.removeEventListener("resize", handleResize);
+  }
   if (renderer) {
     renderer.dispose();
     renderer.forceContextLoss();
