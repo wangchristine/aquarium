@@ -96,6 +96,7 @@ function createFish() {
     showBubble: false,
     bubbleText: "",
     bubbleType: "", // 'greet' 或 'feed'
+    isFleeing: 0, // 吃完飼料後的逃離計時器
   };
 }
 
@@ -163,15 +164,16 @@ function onCanvasClick(event) {
   } else {
     // 點擊魚模式
     const intersects = raycaster.intersectObjects(fishes.map((f) => f.mesh));
-    if (intersects.length > 0 && intersects[0].object.name === "fish") {
-      const intersectedFish = fishes.find(
-        (f) => f.mesh === intersects[0].object
-      );
-      if (intersectedFish) {
-        intersectedFish.showBubble = true;
-        intersectedFish.bubbleText =
-          cuteSayings[Math.floor(Math.random() * cuteSayings.length)];
-        intersectedFish.bubbleTimer = 0;
+    if (intersects.length > 0) {
+      const fishGroup = intersects[0].object.parent;
+      if (fishGroup && fishGroup.name === "fish") {
+        const intersectedFish = fishes.find((f) => f.mesh === fishGroup);
+        if (intersectedFish) {
+          intersectedFish.showBubble = true;
+          intersectedFish.bubbleText =
+            cuteSayings[Math.floor(Math.random() * cuteSayings.length)];
+          intersectedFish.bubbleTimer = 0;
+        }
       }
     }
   }
@@ -181,31 +183,50 @@ function animate() {
   const delta = clock.getDelta();
 
   fishes.forEach((fish, index) => {
+    fish.isFleeing = Math.max(0, fish.isFleeing - delta);
     // 魚群行為：避開其他魚
-    const avoidance = new THREE.Vector3();
-    const avoidanceRadius = 50; // 避開的半徑
-    let neighborCount = 0;
-    for (let i = 0; i < fishes.length; i++) {
-      if (i === index) continue;
-      const otherFish = fishes[i];
-      const dist = fish.mesh.position.distanceTo(otherFish.mesh.position);
-      if (dist < avoidanceRadius) {
-        const away = new THREE.Vector3().subVectors(
-          fish.mesh.position,
-          otherFish.mesh.position
-        );
-        avoidance.add(away);
-        neighborCount++;
+    const distToFood = fish.targetFood
+      ? fish.mesh.position.distanceTo(fish.targetFood.mesh.position)
+      : Infinity;
+
+    // 只有在離食物較遠時才進行避讓，搶食時(距離小於30)則專心衝刺
+    if (distToFood > 30) {
+      const avoidance = new THREE.Vector3();
+      const avoidanceRadius = 50; // 避開的半徑
+      let neighborCount = 0;
+      for (let i = 0; i < fishes.length; i++) {
+        if (i === index) continue;
+        const otherFish = fishes[i];
+        const dist = fish.mesh.position.distanceTo(otherFish.mesh.position);
+        if (dist < avoidanceRadius) {
+          let away = new THREE.Vector3().subVectors(
+            fish.mesh.position,
+            otherFish.mesh.position
+          );
+          // If fish are perfectly overlapped, give them a random nudge
+          if (away.lengthSq() === 0) {
+            away.set(
+              Math.random() - 0.5,
+              Math.random() - 0.5,
+              Math.random() - 0.5
+            );
+          }
+          avoidance.add(away);
+          neighborCount++;
+        }
+      }
+      if (neighborCount > 0) {
+        avoidance.divideScalar(neighborCount);
+        if (avoidance.lengthSq() > 0) {
+          avoidance.normalize();
+          fish.direction.lerp(avoidance, 0.05); // 輕微地轉向避開
+        }
       }
     }
-    if (neighborCount > 0) {
-      avoidance.divideScalar(neighborCount);
-      avoidance.normalize();
-      fish.direction.lerp(avoidance, 0.05); // 輕微地轉向避開
-    }
 
+    const hadTarget = !!fish.targetFood;
     // 找食物
-    if (fish.hunger > 0.15 && foods.length > 0) {
+    if (fish.isFleeing <= 0 && fish.hunger > 0.15 && foods.length > 0) {
       let nearestFood = null;
       let nearestDist = Infinity;
       // 使用魚嘴的位置來找最近的食物
@@ -219,8 +240,20 @@ function animate() {
         }
       }
       fish.targetFood = nearestFood;
+    } else if (fish.isFleeing > 0) {
+      // is fleeing, do not look for food
     } else {
       fish.targetFood = null;
+    }
+
+    // 如果飼料被搶走，立即重新導向
+    if (hadTarget && !fish.targetFood) {
+      const randomDir = new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 0.2,
+        (Math.random() - 0.5) * 2
+      ).normalize();
+      fish.direction.lerp(randomDir, 0.2);
     }
 
     if (fish.targetFood && fish.hunger > 0.15) {
@@ -233,7 +266,9 @@ function animate() {
       // 計算嘴巴到食物的距離來判斷是否吃到
       const mouthOffsetEat = new THREE.Vector3(0, -10, 35);
       const mouthPositionEat = fish.mesh.localToWorld(mouthOffsetEat.clone());
-      const distToEat = mouthPositionEat.distanceTo(fish.targetFood.mesh.position);
+      const distToEat = mouthPositionEat.distanceTo(
+        fish.targetFood.mesh.position
+      );
 
       if (distToEat < 6) {
         // 吃飼料
@@ -241,14 +276,16 @@ function animate() {
           fish.hunger = Math.max(0, fish.hunger - 0.5);
           fish.targetFood.eaten = true; // 標記為被吃掉，但不立即移除
           fish.targetFood = null;
+          fish.isFleeing = 1.2; // 設定1.2秒的「逃離」狀態
 
-          // 吃完飼料後給一個新的隨機方向，避免抖動
+          // 吃完後，平滑地轉向一個新方向
           const randomDir = new THREE.Vector3(
             (Math.random() - 0.5) * 2,
-            (Math.random() - 0.5) * 0.2,
+            (Math.random() - 0.5) * 0.2, // 維持原本的隨機垂直移動
             (Math.random() - 0.5) * 2
           ).normalize();
-          fish.direction.copy(randomDir);
+          // 使用 lerp 平滑轉向，0.1 的係數表示一個較緩的自然轉彎
+          fish.direction.lerp(randomDir, 0.1);
 
           fish.showBubble = true;
           fish.bubbleText = "吃飽飽，耶！";
@@ -274,10 +311,25 @@ function animate() {
 
     // --- 統一更新位置與姿態 ---
     let speedFactor = 1.0;
-    if (fish.targetFood) {
+    const maxSpeed = 1.8;
+    const defaultSpeed = 1.0;
+
+    if (fish.isFleeing > 0) {
+      // 剛吃完，維持較高速度游開
+      speedFactor = maxSpeed;
+    } else if (fish.targetFood) {
       const dist = fish.mesh.position.distanceTo(fish.targetFood.mesh.position);
-      speedFactor = dist < 80 ? 2.5 : 1.5;
+      const slowingRadius = 150; // 在這個半徑內，魚會開始反應
+      if (dist < slowingRadius) {
+        // 當靠近食物時，平滑地加速
+        speedFactor =
+          defaultSpeed +
+          (maxSpeed - defaultSpeed) * (1.0 - dist / slowingRadius);
+      } else {
+        speedFactor = defaultSpeed;
+      }
     }
+
     fish.mesh.position.addScaledVector(
       fish.direction,
       fish.speed * delta * speedFactor
@@ -307,17 +359,43 @@ function animate() {
     };
 
     const steer = new THREE.Vector3();
-    if (p.x < bounds.left) steer.x = 1;
-    if (p.x > bounds.right) steer.x = -1;
-    if (p.y < bounds.bottom) steer.y = 1;
-    if (p.y > bounds.top) steer.y = -1;
-    if (p.z < bounds.back) steer.z = 1;
-    if (p.z > bounds.front) steer.z = -1;
+    let isSteering = false;
+    if (p.x < bounds.left) {
+      steer.x = 1;
+      isSteering = true;
+    }
+    if (p.x > bounds.right) {
+      steer.x = -1;
+      isSteering = true;
+    }
+    if (p.y < bounds.bottom) {
+      steer.y = 1;
+      isSteering = true;
+    }
+    if (p.y > bounds.top) {
+      steer.y = -1;
+      isSteering = true;
+    }
+    if (p.z < bounds.back) {
+      steer.z = 1;
+      isSteering = true;
+    }
+    if (p.z > bounds.front) {
+      steer.z = -1;
+      isSteering = true;
+    }
 
-    if (steer.lengthSq() > 0) {
-      // 如果需要轉向，平滑地改變方向
+    if (isSteering) {
+      // 碰到邊界時，讓轉向帶點隨機性，更自然
+      steer.add(
+        new THREE.Vector3(
+          (Math.random() - 0.5) * 1.5, // 增加水平隨機性
+          (Math.random() - 0.5) * 0.2, // 減少垂直隨機性
+          (Math.random() - 0.5) * 1.5 // 增加水平隨機性
+        )
+      );
       steer.normalize();
-      fish.direction.lerp(steer, 0.1);
+      fish.direction.lerp(steer, 0.2);
     }
 
     // 確保魚不會超出邊界
