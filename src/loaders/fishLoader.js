@@ -2,72 +2,54 @@ import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 
-// Instantiate loaders
-const objLoader = new OBJLoader();
-const mtlLoader = new MTLLoader();
-const textureLoader = new THREE.TextureLoader();
-
-/**
- * HYBRID STRATEGY: Uses MTL for base properties and programmatically applies the correct texture.
- * @returns {Promise<THREE.Group>} A promise that resolves with the final loaded fish model.
- */
 export function loadGoldfishModel() {
   return new Promise((resolve, reject) => {
-    
-    const objBasePath = '/fish/obj/';
-    const textureBasePath = '/fish/';
-    mtlLoader.setPath(objBasePath);
-    textureLoader.setPath(textureBasePath);
+    const mtlLoader = new MTLLoader();
+    // Set path to the directory containing the MTL file
+    mtlLoader.setPath('/fish/obj/');
 
-    // --- Load texture and materials in parallel ---
-    const texturePromise = textureLoader.loadAsync('fish.jpg');
-    const materialsPromise = mtlLoader.loadAsync('fish.mtl');
-
-    Promise.all([texturePromise, materialsPromise])
-      .then(([texture, materials]) => {
-        
+    mtlLoader.load(
+      'fish.mtl',
+      (materials) => {
         materials.preload();
+
+        const objLoader = new OBJLoader();
         objLoader.setMaterials(materials);
-        objLoader.setPath(objBasePath);
+        // Set path to the directory containing the OBJ file
+        objLoader.setPath('/fish/obj/');
+        objLoader.load(
+          'fish.obj',
+          (object) => {
+            // --- Centering and Scaling ---
+            const box = new THREE.Box3().setFromObject(object);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
 
-        // --- Load model after materials are set ---
-        return objLoader.loadAsync('fish.obj').then(object => ({ texture, object }));
-      })
-      .then(({ texture, object }) => {
+            object.position.copy(center).negate();
+            object.updateMatrixWorld(true);
 
-        // --- Manually apply the correct texture to the loaded materials ---
-        object.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            // Assuming the model has one primary material
-            if (child.material) {
-              child.material.map = texture;
-              child.material.needsUpdate = true;
-            }
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const desiredSize = 120;
+            const scale = desiredSize / maxDim;
+            object.scale.set(scale, scale, scale);
+
+            const fishGroup = new THREE.Group();
+            fishGroup.add(object);
+
+            resolve(fishGroup);
+          },
+          undefined, // onProgress
+          (error) => {
+            console.error('An error happened during OBJ loading.', error);
+            reject(error);
           }
-        });
-        
-        // --- Robust Centering and Scaling ---
-        const box = new THREE.Box3().setFromObject(object);
-        const size = box.getSize(new THREE.Vector3());
-        const center = box.getCenter(new THREE.Vector3());
-
-        object.position.copy(center).negate();
-        object.updateMatrixWorld(true);
-
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const desiredSize = 120; // Doubled the size
-        const scale = desiredSize / maxDim;
-        object.scale.set(scale, scale, scale);
-
-        const fishGroup = new THREE.Group();
-        fishGroup.add(object);
-        // fishGroup.rotation.y = -Math.PI / 2; // Removed fixed initial rotation
-
-        resolve(fishGroup);
-      })
-      .catch(error => {
-        console.error('An error happened during hybrid loading.', error);
+        );
+      },
+      undefined, // onProgress
+      (error) => {
+        console.error('An error happened during MTL loading.', error);
         reject(error);
-      });
+      }
+    );
   });
 }
