@@ -28,6 +28,7 @@
 import * as THREE from "three";
 import { ref, onMounted, onBeforeUnmount, reactive } from "vue";
 import foodBagImg from "@/assets/foodbag.png";
+import { loadGoldfishModel } from "./loaders/fishLoader.js";
 
 // 可愛對話集
 const cuteSayings = [
@@ -50,6 +51,7 @@ let foods = [];
 let bubbles = [];
 const fishes = reactive([]);
 let handleResize = null;
+let goldfishModel = null; // Variable to hold the loaded goldfish model
 
 // 改回使用 reactive 的 aquariumSize，尺寸與 window 連動
 const aquariumSize = reactive({
@@ -61,19 +63,12 @@ const aquariumSize = reactive({
 const clock = new THREE.Clock();
 
 function createFish() {
-  const geometry = new THREE.BoxGeometry(60, 30, 20); // width, height, depth
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xffaa00,
-    roughness: 0.5,
-    metalness: 0.3,
-  });
-  // 魚的本體 mesh，將其旋轉，使長邊朝向 Z 軸，以配合 lookAt
-  const fishBody = new THREE.Mesh(geometry, material);
-  fishBody.rotation.y = -Math.PI / 2;
+  // Clone the loaded goldfish model
+  const fishModelClone = goldfishModel.clone();
 
   // 使用一個 Group 來作為魚的容器，之後的操作都針對這個 group
   const fishGroup = new THREE.Group();
-  fishGroup.add(fishBody);
+  fishGroup.add(fishModelClone);
   fishGroup.name = "fish"; // 為 group 命名
 
   // 在水族箱範圍內隨機生成
@@ -460,7 +455,21 @@ function animate() {
 
 let boxMesh, boxHelper;
 
-onMounted(() => {
+onMounted(async () => {
+  // Load the model first
+  try {
+    goldfishModel = await loadGoldfishModel();
+  } catch (error) {
+    console.error("Failed to load goldfish model, using fallback cube.", error);
+    // As a fallback, create a simple cube geometry so the app doesn't crash
+    const fallbackGeo = new THREE.BoxGeometry(60, 30, 20);
+    const fallbackMat = new THREE.MeshStandardMaterial({ color: 0xffaa00 });
+    goldfishModel = new THREE.Group();
+    const body = new THREE.Mesh(fallbackGeo, fallbackMat);
+    body.rotation.y = -Math.PI / 2;
+    goldfishModel.add(body);
+  }
+
   scene = new THREE.Scene();
   const aspect = window.innerWidth / window.innerHeight;
 
