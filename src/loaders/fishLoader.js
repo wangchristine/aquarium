@@ -6,7 +6,7 @@ export function loadGuppyFishModel() {
     const loader = new GLTFLoader();
 
     loader.load(
-      "/koi_fish.glb",
+      `${import.meta.env.BASE_URL}koi_fish.glb`,
       (gltf) => {
         const object = gltf.scene;
         const fishGroup = new THREE.Group();

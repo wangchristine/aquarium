@@ -34,7 +34,7 @@ scene.add(gridHelper);
 
 const loader = new GLTFLoader();
 loader.load(
-  "/koi_fish.glb",
+  `${import.meta.env.BASE_URL}koi_fish.glb`,
   (gltf) => {
     const model = gltf.scene;
     // 將魚模型在水平面上旋轉 270 度，讓魚頭朝向相機
